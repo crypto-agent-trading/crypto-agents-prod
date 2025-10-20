@@ -28,3 +28,7 @@ data/agents_state.json
 
 # Node/web cache (if added later)
 node_modules/
+.env
+.env.*
+data/*.log
+data/agents_state.json
