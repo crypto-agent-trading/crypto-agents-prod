@@ -1,0 +1,55 @@
+{
+  "agents": [
+    {
+      "name": "market-scanner",
+      "type": "market_scanner",
+      "symbols": [
+        "BTC/CAD",
+        "ETH/CAD"
+      ],
+      "config": {
+        "interval_sec": 2,
+        "mom_thresh": 0.25,
+        "qty": 1
+      }
+    },
+    {
+      "name": "depth-l1l3",
+      "type": "depth_l1l3",
+      "symbols": [
+        "BTC/CAD"
+      ],
+      "config": {
+        "interval_sec": 3,
+        "imbalance_thresh": 0.6,
+        "qty": 1
+      }
+    },
+    {
+      "name": "indicator",
+      "type": "indicator",
+      "symbols": [
+        "BTC/CAD",
+        "ETH/CAD"
+      ],
+      "config": {
+        "rsi_period": 14,
+        "rsi_buy": 55,
+        "rsi_sell": 45,
+        "interval_sec": 3,
+        "qty": 1
+      }
+    },
+    {
+      "name": "execution",
+      "type": "execution",
+      "symbols": [
+        "BTC/CAD",
+        "ETH/CAD"
+      ],
+      "config": {
+        "interval_sec": 1
+      }
+    }
+  ]
+}

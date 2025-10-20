@@ -1,0 +1,20 @@
+version: "3.8"
+services:
+  crypto-agents-pro:
+    build: .
+    environment:
+      - MODE=${MODE:-paper}
+      - ALLOWED_SYMBOLS=${ALLOWED_SYMBOLS:-["BTC/CAD","ETH/CAD"]}
+      - MAX_POSITION=${MAX_POSITION:-50}
+      - ORDER_SIZE=${ORDER_SIZE:-10}
+      - PER_TRADE_RISK_PCT=${PER_TRADE_RISK_PCT:-0.01}
+      - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-100}
+      - FEED_MODE=${FEED_MODE:-rest}
+      - LONG_ONLY=${LONG_ONLY:-true}
+      - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
+      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data

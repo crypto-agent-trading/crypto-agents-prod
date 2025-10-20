@@ -1,0 +1,165 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Crypto Agents Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; background: #0b0f19; color: #e5e7eb; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    button { background: #2563eb; border: 0; color: white; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+    button.secondary { background: #374151; }
+    code { background: #0f172a; padding: 2px 6px; border-radius: 6px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #1f2937; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background:#1f2937; margin-right: 6px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Crypto Agents Pro</h1>
+  <div>
+    <button id="refresh">Refresh</button>
+    <button id="start">Start All</button>
+    <button id="stop" class="secondary">Stop All</button>
+  </div>
+</header>
+
+<div class="card" id="build"></div>
+<div class="card" id="status"></div>
+<div class="card" id="pnl"></div>
+<div class="card">
+  <h3>Positions</h3>
+  <table id="positions"><thead><tr><th>Symbol</th><th>Position</th><th>Avg Price</th><th>Last</th><th>Unrealized</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+  <h3>Trades (recent)</h3>
+  <table id="trades"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Pos After</th><th>Realized Δ</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+  <h3>Agents</h3>
+  <table id="agents">
+    <thead><tr><th>Name</th><th>Type</th><th>Symbols</th><th>Status</th><th>Mode</th><th>Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+
+async function jget(p){ const r = await fetch(p); if(!r.ok) throw new Error(p+" -> "+r.status); return r.json(); }
+async function jpost(p){ const r = await fetch(p,{method:"POST", headers:{"Content-Type":"application/json"}}); if(!r.ok) throw new Error(p+" -> "+r.status); return r.json(); }
+function fmt(n){ return (typeof n === 'number') ? n.toFixed(2) : n; }
+
+async function load() {
+  const [b,s,a,p,ps,t] = await Promise.all([
+    jget("/api/build"),
+    jget("/api/status"),
+    jget("/api/agents"),
+    jget("/api/pnl"),
+    jget("/api/positions"),
+    jget("/api/trades?limit=100")
+  ]);
+
+  document.getElementById("build").innerHTML =
+    `<b>Build</b><br/>Name: <code>${b.name}</code> | Version: <code>${b.version}</code> | Git: <code>${b.git}</code>`;
+
+  document.getElementById("status").innerHTML =
+    `<b>Status</b><br/>Mode: <code>${s.mode}</code> | Symbols: ${(s.symbols||[]).map(x=>`<span class='pill'>${x}</span>`).join(" ")} | MaxPos: ${s.maxPosition} | OrderSize: ${s.orderSize} | Kill: ${s.kill}`;
+
+  const tbody = document.querySelector("#agents tbody"); tbody.innerHTML = "";
+  (a.agents||[]).forEach(ag => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${ag.name}</td><td>${ag.type}</td><td>${(ag.symbols||[]).join(", ")}</td><td>${ag.status}</td><td>${ag.mode}</td>
+      <td><button onclick="startOne('${ag.name}')">Start</button> <button class="secondary" onclick="stopOne('${ag.name}')">Stop</button></td>`;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById("pnl").innerHTML =
+    `<b>Positions & PnL</b><br/>
+     Realized (day): <code>${fmt(p.realized_day)}</code> |
+     Unrealized: <code>${fmt(p.unrealized)}</code> |
+     Total: <code>${fmt(p.total)}</code>`;
+
+  const pbody = document.querySelector("#positions tbody");
+  pbody.innerHTML = "";
+  Object.keys(ps.by_symbol||{}).forEach(sym => {
+    const s = ps.by_symbol[sym];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${sym}</td><td>${fmt(s.position)}</td><td>${fmt(s.avg_price)}</td><td>${fmt(s.last)}</td><td>${fmt(s.unrealized)}</td>`;
+    pbody.appendChild(tr);
+  });
+
+  const tBody = document.querySelector("#trades tbody");
+  tBody.innerHTML = "";
+  (t.trades||[]).slice().reverse().forEach(trd => {
+    const when = new Date(trd.ts * 1000).toLocaleTimeString();
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${when}</td><td>${trd.symbol}</td><td>${trd.side}</td>
+      <td>${fmt(trd.qty)}</td><td>${fmt(trd.price)}</td><td>${fmt(trd.position_after)}</td><td>${fmt(trd.realized_change)}</td>`;
+    tBody.appendChild(tr);
+  });
+}
+
+async function startAll(){ await jpost("/api/agents/start"); await load(); }
+async function stopAll(){ await jpost("/api/agents/stop"); await load(); }
+async function startOne(name){ await jpost("/api/agents/start/"+name); await load(); }
+async function stopOne(name){ await jpost("/api/agents/stop/"+name); await load(); }
+
+document.getElementById("refresh").onclick = load;
+document.getElementById("start").onclick = startAll;
+document.getElementById("stop").onclick = stopAll;
+
+load().catch(console.error);
+setInterval(() => { load().catch(()=>{}); }, 2000);
+
+
+</script>
+</body>
+</html>
+
+<script>
+function fmt(n){ return (typeof n === 'number') ? n.toFixed(2) : n; }
+
+async function loadExtra(p, ps, t) {
+  document.getElementById("pnl").innerHTML = `<b>Positions & PnL</b><br/>
+    Realized (day): <code>${fmt(p.realized_day)}</code> | Unrealized: <code>${fmt(p.unrealized)}</code> | Total: <code>${fmt(p.total)}</code>`;
+
+  const pbody = document.querySelector("#positions tbody");
+  pbody.innerHTML = "";
+  const symKeys = Object.keys(ps.by_symbol || {});
+  symKeys.forEach(sym => {
+    const s = ps.by_symbol[sym];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${sym}</td><td>${fmt(s.position)}</td><td>${fmt(s.avg_price)}</td><td>${fmt(s.last)}</td><td>${fmt(s.unrealized)}</td>`;
+    pbody.appendChild(tr);
+  });
+
+  const tBody = document.querySelector("#trades tbody");
+  tBody.innerHTML = "";
+  (t.trades || []).slice().reverse().forEach(trd => {
+    const when = new Date(trd.ts * 1000).toLocaleTimeString();
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${when}</td><td>${trd.symbol}</td><td>${trd.side}</td>
+      <td>${fmt(trd.qty)}</td><td>${fmt(trd.price)}</td><td>${fmt(trd.position_after)}</td><td>${fmt(trd.realized_change)}</td>`;
+    tBody.appendChild(tr);
+  });
+}
+
+// Patch the earlier load() to call loadExtra
+const _origLoad = load;
+load = async function() {
+  const [b,s,a,p,ps,t] = await Promise.all([jget("/api/build"), jget("/api/status"), jget("/api/agents"), jget("/api/pnl"), jget("/api/positions"), jget("/api/trades?limit=100")]);
+  document.getElementById("build").innerHTML = `<b>Build</b><br/>Name: <code>${b.name}</code> | Version: <code>${b.version}</code> | Git: <code>${b.git}</code>`;
+  document.getElementById("status").innerHTML = `<b>Status</b><br/>Mode: <code>${s.mode}</code> | Symbols: ${s.symbols.map(x=>`<span class='pill'>${x}</span>`).join(" ")} | MaxPos: ${s.maxPosition} | OrderSize: ${s.orderSize} | Kill: ${s.kill}`;
+  const tbody = document.querySelector("#agents tbody"); tbody.innerHTML = "";
+  a.agents.forEach(ag => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${ag.name}</td><td>${ag.type}</td><td>${ag.symbols.join(", ")}</td><td>${ag.status}</td><td>${ag.mode}</td>
+      <td><button onclick="startOne('${ag.name}')">Start</button> <button class="secondary" onclick="stopOne('${ag.name}')">Stop</button></td>`;
+    tbody.appendChild(tr);
+  });
+  await loadExtra(p, ps, t);
+}
+</script>
