@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+.env
+.env.* 
+pip-wheel-metadata/
+dist/
+build/
+.eggs/
+*.egg-info/
+
+# Project data/logs
+data/*.log
+data/*.gz
+data/*.csv
+data/*.sqlite
+data/agents_state.json
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node/web cache (if added later)
+node_modules/
