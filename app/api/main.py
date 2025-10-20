@@ -142,7 +142,8 @@ async def api_positions():
     ex = manager.get_agent("execution")
     if not ex:
         raise HTTPException(404, "Execution agent not found")
-    snap = await ex.snapshot(lambda s: manager.pricefeed.last_price(s))
+    # Pull fresh prices for accurate unrealized PnL
+    snap = await ex.snapshot(lambda s: manager.pricefeed.last_price(s, refresh=True))
     return snap
 
 @app.get("/api/pnl")
@@ -150,9 +151,15 @@ async def api_pnl():
     ex = manager.get_agent("execution")
     if not ex:
         raise HTTPException(404, "Execution agent not found")
-    snap = await ex.snapshot(lambda s: manager.pricefeed.last_price(s))
+    # Pull fresh prices for accurate unrealized PnL
+    snap = await ex.snapshot(lambda s: manager.pricefeed.last_price(s, refresh=True))
     total = snap.get("pnl_realized_day", 0.0) + snap.get("pnl_unrealized", 0.0)
-    return {"realized_day": snap.get("pnl_realized_day", 0.0), "unrealized": snap.get("pnl_unrealized", 0.0), "total": total, "by_symbol": snap.get("by_symbol", {})}
+    return {
+        "realized_day": snap.get("pnl_realized_day", 0.0),
+        "unrealized": snap.get("pnl_unrealized", 0.0),
+        "total": total,
+        "by_symbol": snap.get("by_symbol", {}),
+    }
 
 @app.get("/api/trades")
 def api_trades(limit: int = 100):

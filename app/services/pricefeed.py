@@ -10,8 +10,11 @@ class PriceFeed:
     def inject_price(self, symbol: str, price: float):
         self._last[symbol] = price
 
-    async def last_price(self, symbol: str) -> float:
-        if symbol in self._last:
+    async def last_price(self, symbol: str, refresh: bool = False) -> float:
+        """
+        Return last price; if refresh=True, always pull a fresh ticker first.
+        """
+        if (not refresh) and symbol in self._last:
             return float(self._last[symbol])
         t = await self.exchange.fetch_ticker(symbol)
         price = t.get("last") or t.get("close") or t.get("info", {}).get("c", [None])[0]
@@ -25,7 +28,7 @@ class PriceFeed:
         p = await self.last_price(symbol)
         candles = []
         v = p
-        for i in range(limit):
+        for _ in range(limit):
             v *= (1 + random.uniform(-0.002, 0.002))
             candles.append({"close": v})
         return candles

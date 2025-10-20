@@ -63,3 +63,9 @@ LOG_LEVEL=INFO
 ## Notes
 - Keep `MODE=paper` until your signals & risk model are proven.
 - Never hardcode API keys; use `.env` only.
+
+
+run.bat
+run.bat live
+run.bat paper 8000 ws
+run.bat live 8080 rest --no-browser
