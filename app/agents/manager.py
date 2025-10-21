@@ -1,100 +1,102 @@
-import json, asyncio
+# app/agents/manager.py
+import asyncio, json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+
 from .market_scanner import MarketScannerAgent
 from .depth import DepthL1L3Agent
-from .execution import ExecutionAgent
 from .indicator import IndicatorAgent
+from .execution import ExecutionAgent
+
 from ..services.pricefeed import PriceFeed
-from ..services.kraken_ws import KrakenWS
 from ..exchanges.paper import PaperExchange
 from ..exchanges.kraken import KrakenExchange
 from ..core.config import settings, is_live
 from ..core.signals import SignalBus
 
-AGENT_TYPES = {
-    "market_scanner": MarketScannerAgent,
-    "depth_l1l3": DepthL1L3Agent,
-    "execution": ExecutionAgent,
-    "indicator": IndicatorAgent,
-}
-
 class AgentManager:
-    def __init__(self, state_dir: Path):
-        self.state_dir = state_dir
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file = self.state_dir / "agents_state.json"
+    """
+    Builds and manages all agents, wiring them with a shared SignalBus.
+    """
+
+    def __init__(self, config_path: Path | None = None):
+        self._cfg_path = config_path or Path("agents.json")
         self._agents: Dict[str, Any] = {}
-        self._configs: Dict[str, Dict[str, Any]] = {}
-
-        if is_live():
-            ex = KrakenExchange(settings.KRAKEN_API_KEY, settings.KRAKEN_API_SECRET, mode="live")
-        else:
-            ex = PaperExchange(mode="paper")
-        self.exchange = ex
-        self.pricefeed = PriceFeed(ex)
+        self._agent_cfgs: Dict[str, Dict[str, Any]] = {}
         self.bus = SignalBus()
+        self.exchange = KrakenExchange() if is_live() else PaperExchange()
+        self.pricefeed = PriceFeed(self.exchange)
 
-        self._ws = None
-        if settings.FEED_MODE == "ws":
-            self._ws = KrakenWS()
-            for sym in settings.ALLOWED_SYMBOLS:
-                asyncio.create_task(self._ws.subscribe_ticker(sym, lambda p, s=sym: self.pricefeed.inject_price(s, p)))
+        # default config
+        if not self._cfg_path.exists():
+            default = {
+                "market_scanner": {"enabled": False, "interval_sec": 2, "mom_thresh": 0.25, "qty": settings.ORDER_SIZE},
+                "depth":          {"enabled": False, "interval_sec": 3, "imbalance_thresh": 0.60, "qty": settings.ORDER_SIZE},
+                "indicator":      {"enabled": True,  "interval_sec": 2, "qty": settings.ORDER_SIZE},
+                "execution":      {"enabled": True}
+            }
+            self._cfg_path.write_text(json.dumps(default, indent=2))
+        self._agent_cfgs = json.loads(self._cfg_path.read_text())
 
-    def _save(self):
-        data = {"agents": list(self._configs.values())}
-        self.state_file.write_text(json.dumps(data, indent=2))
-
-    def _load(self):
-        if self.state_file.exists():
-            data = json.loads(self.state_file.read_text())
-            self._configs = {cfg["name"]: cfg for cfg in data.get("agents", [])}
-
-    def upsert(self, cfg: Dict[str, Any]):
-        name = cfg["name"]
-        self._configs[name] = cfg
-        self._save()
+        # build initial set
+        self.build_all()
 
     def build_all(self):
-        self._load()
-        for name, cfg in self._configs.items():
-            if name in self._agents:
-                continue
-            cls = AGENT_TYPES[cfg["type"]]
-            common = dict(name=cfg["name"], symbols=cfg["symbols"], mode=settings.MODE, config=cfg.get("config", {}))
-            if cls.__name__ in ("MarketScannerAgent", "DepthL1L3Agent", "IndicatorAgent"):
-                self._agents[name] = cls(pricefeed=self.pricefeed, bus=self.bus, **common)
-            elif cls.__name__ == "ExecutionAgent":
-                self._agents[name] = cls(exchange=self.exchange, bus=self.bus, **common)
-            else:
-                self._agents[name] = cls(**common)
+        syms = settings.ALLOWED_SYMBOLS
+        cfg = self._agent_cfgs
 
-    def get_agent(self, name: str):
-        return self._agents.get(name)
+        self._agents.clear()
+        if cfg.get("market_scanner", {}).get("enabled"):
+            self._agents["market_scanner"] = MarketScannerAgent(
+                name="market_scanner", symbols=syms, mode=settings.MODE, config=cfg["market_scanner"],
+                pricefeed=self.pricefeed, bus=self.bus
+            )
+        if cfg.get("depth", {}).get("enabled"):
+            self._agents["depth"] = DepthL1L3Agent(
+                name="depth", symbols=syms, mode=settings.MODE, config=cfg["depth"],
+                pricefeed=self.pricefeed, bus=self.bus
+            )
+        if cfg.get("indicator", {}).get("enabled", True):
+            self._agents["indicator"] = IndicatorAgent(
+                name="indicator", symbols=syms, mode=settings.MODE, config=cfg["indicator"],
+                pricefeed=self.pricefeed, bus=self.bus
+            )
+        if cfg.get("execution", {}).get("enabled", True):
+            self._agents["execution"] = ExecutionAgent(
+                name="execution", symbols=syms, mode=settings.MODE, config=cfg["execution"],
+                exchange=self.exchange, pricefeed=self.pricefeed, bus=self.bus
+            )
 
     def list(self) -> List[Dict[str, Any]]:
-        out = []
-        for name, agent in self._agents.items():
-            out.append({
-                "name": name,
-                "type": self._configs[name]["type"],
-                "symbols": agent.symbols,
-                "mode": agent.mode,
-                "status": agent.status,
-                "config": agent.config
-            })
+        out: List[Dict[str, Any]] = []
+        for n, ag in self._agents.items():
+            out.append({"name": n, "status": ag.status, "mode": ag.mode, "symbols": ag.symbols, "config": ag.config})
         return out
 
     async def start(self, name: str):
-        await self._agents[name].start()
+        if name in self._agents:
+            await self._agents[name].start()
 
     async def stop(self, name: str):
-        await self._agents[name].stop()
+        if name in self._agents:
+            await self._agents[name].stop()
 
     async def start_all(self):
-        for n in self._agents:
+        for n in list(self._agents.keys()):
             await self.start(n)
 
     async def stop_all(self):
-        for n in self._agents:
+        for n in list(self._agents.keys()):
             await self.stop(n)
+
+    def update_config(self, name: str, cfg: Dict[str, Any]):
+        self._agent_cfgs[name] = cfg
+        self._cfg_path.write_text(json.dumps(self._agent_cfgs, indent=2))
+        # rebuild agent if needed
+        if name in self._agents:
+            # stop old
+            try:
+                asyncio.create_task(self._agents[name].stop())
+            except Exception:
+                pass
+        self.build_all()
