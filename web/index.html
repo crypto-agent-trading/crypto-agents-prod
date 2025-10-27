@@ -15,6 +15,9 @@
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid #1f2937; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background:#1f2937; margin-right: 6px; }
+      /* …existing styles… */
+  .scroll { max-height: 320px; overflow: auto; border: 1px solid #1f2937; border-radius: 8px; }
+  thead th { position: sticky; top: 0; background: #0f172a; }
   </style>
 </head>
 <body>
@@ -34,10 +37,22 @@
   <h3>Positions</h3>
   <table id="positions"><thead><tr><th>Symbol</th><th>Position</th><th>Avg Price</th><th>Last</th><th>Unrealized</th></tr></thead><tbody></tbody></table>
 </div>
+
 <div class="card">
   <h3>Trades (recent)</h3>
-  <table id="trades"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Pos After</th><th>Realized Δ</th></tr></thead><tbody></tbody></table>
+  <div class="scroll">
+    <table id="trades">
+      <thead>
+        <tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Pos After</th><th>Realized Δ</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </div>
+
+
+
+
 <div class="card">
   <h3>Agents</h3>
   <table id="agents">

@@ -1,46 +1,61 @@
-import asyncio, logging
-from typing import List, Dict, Any, Optional
+# app/agents/base.py
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional
+
+log = logging.getLogger("agent.base")
 
 class BaseAgent:
-    def __init__(self, name: str, symbols: List[str], mode: str = "paper", config: Optional[Dict[str, Any]] = None):
+    """
+    Common lifecycle for all agents:
+      - start(): sets running flag and spawns a background task
+      - stop(): clears flag and cancels the task
+      - status: 'running' or 'stopped'
+    Subclasses must implement async def run(self).
+    """
+
+    def __init__(self, name: str, symbols: List[str], mode: str, config: Dict[str, Any]):
         self.name = name
-        self.symbols = symbols
+        self.symbols = symbols or []
         self.mode = mode
         self.config = config or {}
-        self._task: Optional[asyncio.Task] = None
         self._running = asyncio.Event()
-        self.status = "idle"  # idle|running|stopping|error
-        self.log = logging.getLogger(f"agent.{name}")
+        self._task: Optional[asyncio.Task] = None
+
+    @property
+    def status(self) -> str:
+        return "running" if (self._task and not self._task.done() and self._running.is_set()) else "stopped"
 
     async def start(self):
         if self._task and not self._task.done():
+            log.info("[%s] already running", self.name)
             return
         self._running.set()
-        self.status = "running"
-        self._task = asyncio.create_task(self._runner())
+        self._task = asyncio.create_task(self._run_wrapper(), name=f"{self.name}-task")
+        log.info("[%s] started (symbols=%s)", self.name, ",".join(self.symbols) or "<none>")
 
     async def stop(self):
         self._running.clear()
-        self.status = "stopping"
-        if self._task:
+        if self._task and not self._task.done():
             self._task.cancel()
             try:
-                await asyncio.wait_for(self._task, timeout=5)
-            except asyncio.TimeoutError:
-                self.log.warning("Force stopping agent %s", self.name)
-        self.status = "idle"
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        log.info("[%s] stopped", self.name)
 
-    async def _runner(self):
+    async def _run_wrapper(self):
         try:
             await self.run()
         except asyncio.CancelledError:
             pass
         except Exception:
-            self.status = "error"
-            self.log.exception("Agent %s crashed", self.name)
+            log.exception("[%s] crashed", self.name)
         finally:
-            if self.status != "error":
-                self.status = "idle"
+            self._running.clear()
 
     async def run(self):
+        """Subclasses implement the main loop."""
         raise NotImplementedError

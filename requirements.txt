@@ -9,3 +9,5 @@ prometheus-client==0.21.0
 typer==0.12.5
 cryptography==43.0.1
 websockets==13.1
+numpy>=1.26,<3.0
+

@@ -1,34 +1,64 @@
-import asyncio, random
-from typing import List, Dict, Any
-from ..exchanges.base import Exchange
+# app/services/pricefeed.py
+from __future__ import annotations
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional
+from datetime import datetime
+
+from ..core.config import settings
+
+log = logging.getLogger("services.pricefeed")
+
+def _map_ohlcv_rows(rows: List[List[float]]) -> List[Dict[str, float]]:
+    out: List[Dict[str, float]] = []
+    for r in rows or []:
+        # CCXT OHLCV: [timestamp, open, high, low, close, volume]
+        ts, o, h, l, c, v = (r + [None] * 6)[:6]
+        out.append({"ts": float(ts or 0), "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": float(v)})
+    return out
 
 class PriceFeed:
-    def __init__(self, exchange: Exchange):
+    """
+    Thin async wrapper around the exchange for public market data.
+    Works in PAPER or LIVE. If the exchange doesn't implement public fetches,
+    we attempt to fall back to its 'public' client (ccxt) when available.
+    """
+
+    def __init__(self, exchange) -> None:
         self.exchange = exchange
-        self._last: dict[str, float] = {}
 
-    def inject_price(self, symbol: str, price: float):
-        self._last[symbol] = price
+    async def _maybe_await(self, coro_or_val):
+        if asyncio.iscoroutine(coro_or_val):
+            return await coro_or_val
+        # allow sync fallbacks via threads to avoid blocking loop
+        return await asyncio.to_thread(lambda: coro_or_val)
 
-    async def last_price(self, symbol: str) -> float:
-        if symbol in self._last:
-            return float(self._last[symbol])
-        t = await self.exchange.fetch_ticker(symbol)
-        price = t.get("last") or t.get("close") or t.get("info", {}).get("c", [None])[0]
-        if price is None:
-            ob = await self.exchange.fetch_order_book(symbol)
-            price = (ob["bids"][0][0] + ob["asks"][0][0]) / 2.0
-        self._last[symbol] = float(price)
-        return float(price)
+    async def get_orderbook(self, symbol: str, limit: int = 5) -> Dict[str, Any]:
+        # try exchange.fetch_order_book
+        if hasattr(self.exchange, "fetch_order_book"):
+            ob = await self._maybe_await(self.exchange.fetch_order_book(symbol, limit=limit))
+            if ob and ob.get("bids") and ob.get("asks"):
+                return {"bids": ob["bids"], "asks": ob["asks"], "ts": ob.get("timestamp")}
+        # try exchange.public.fetch_order_book
+        public = getattr(self.exchange, "public", None)
+        if public and hasattr(public, "fetch_order_book"):
+            ob = await self._maybe_await(public.fetch_order_book(symbol, limit=limit))
+            return {"bids": ob.get("bids", []), "asks": ob.get("asks", []), "ts": ob.get("timestamp")}
+        # last resort
+        log.warning("[pricefeed] empty orderbook for %s", symbol)
+        return {"bids": [], "asks": [], "ts": None}
 
-    async def get_recent_klines(self, symbol: str, limit: int = 50) -> List[Dict[str, Any]]:
-        p = await self.last_price(symbol)
-        candles = []
-        v = p
-        for i in range(limit):
-            v *= (1 + random.uniform(-0.002, 0.002))
-            candles.append({"close": v})
-        return candles
-
-    async def get_orderbook(self, symbol: str) -> Dict[str, Any]:
-        return await self.exchange.fetch_order_book(symbol)
+    async def get_recent_klines(self, symbol: str, timeframe: str = "1m", limit: int = 300) -> List[Dict[str, float]]:
+        # try exchange.fetch_ohlcv
+        if hasattr(self.exchange, "fetch_ohlcv"):
+            rows = await self._maybe_await(self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=None, limit=limit))
+            if rows:
+                return _map_ohlcv_rows(rows)
+        # try exchange.public.fetch_ohlcv
+        public = getattr(self.exchange, "public", None)
+        if public and hasattr(public, "fetch_ohlcv"):
+            rows = await self._maybe_await(public.fetch_ohlcv(symbol, timeframe=timeframe, since=None, limit=limit))
+            return _map_ohlcv_rows(rows)
+        # last resort
+        log.warning("[pricefeed] empty ohlcv for %s", symbol)
+        return []
