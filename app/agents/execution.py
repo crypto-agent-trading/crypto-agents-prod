@@ -1,7 +1,4 @@
 # app/agents/execution.py
-# Consumes Signals from SignalBus and executes with post-only limits,
-# cancel&reprice, and a realistic PAPER slippage/fee model.
-
 from __future__ import annotations
 
 import asyncio, time, math, logging
@@ -15,15 +12,15 @@ from ..exchanges.base import Exchange
 
 log = logging.getLogger("agent.execution")
 
-POST_ONLY_K = 0.3       # place limit at mid -/+ k*spread
-REPRICE_SECS = 6.0      # cancel & reprice timeout
-REPRICE_MOVE = 0.5      # reprice if adverse move > 0.5*spread
-MAX_SPREAD_BPS_EXEC = 3.0
-TAKER_FEE_BPS_SIM = 6.0 # ~6 bps taker fee in PAPER sim
+POST_ONLY_K = 0.3
+REPRICE_SECS = 6.0
+REPRICE_MOVE = 0.5
+MAX_SPREAD_BPS_EXEC = 7.0          # (slightly relaxed from earlier)
+TAKER_FEE_BPS_SIM = 6.0
 
 def _book_mid_spread(ob: Dict[str, Any]) -> tuple[float, float, float]:
-    best_bid = float(ob["bids"][0][0]) if ob["bids"] else float("nan")
-    best_ask = float(ob["asks"][0][0]) if ob["asks"] else float("nan")
+    best_bid = float(ob["bids"][0][0]) if ob.get("bids") else float("nan")
+    best_ask = float(ob["asks"][0][0]) if ob.get("asks") else float("nan")
     if not (best_bid > 0 and best_ask > 0 and best_ask > best_bid):
         return float("nan"), float("nan"), float("inf")
     mid = (best_bid + best_ask) / 2.0
@@ -35,16 +32,16 @@ def _post_only_price(side: str, mid: float, spr: float) -> float:
     return max(0.0, mid - POST_ONLY_K * spr) if side == "buy" else (mid + POST_ONLY_K * spr)
 
 class ExecutionAgent(BaseAgent):
-    def __init__(self, exchange: Exchange, pricefeed: PriceFeed, bus: SignalBus, **kwargs):
+    def __init__(self, exchange: Exchange, pricefeed: PriceFeed, bus: SignalBus, portfolio, **kwargs):
         super().__init__(**kwargs)
         self.exchange = exchange
         self.pricefeed = pricefeed
         self.bus = bus
+        self.portfolio = portfolio
         self._sub = None
 
     async def start(self):
         await super().start()
-        # subscribe to the bus
         self._sub = await self.bus.subscribe()
 
     async def stop(self):
@@ -66,7 +63,6 @@ class ExecutionAgent(BaseAgent):
         live = is_live()
 
         if live:
-            # Kraken via ccxt – postOnly supported via params. Adjust to your Kraken wrapper if needed.
             order = await self.exchange.create_order(
                 symbol, type="limit", side=side, amount=qty, price=limit_px, params={"postOnly": True}
             )
@@ -78,7 +74,6 @@ class ExecutionAgent(BaseAgent):
                 filled = float(status.get("filled", 0.0))
                 remaining = float(status.get("remaining", 0.0))
 
-                # refresh book and check adverse move
                 ob = await self.exchange.fetch_order_book(symbol, limit=5)
                 mid, spr, spr_bps = _book_mid_spread(ob)
                 adverse_move = abs(mid - last_mid)
@@ -102,21 +97,11 @@ class ExecutionAgent(BaseAgent):
                     start_ts = time.time()
                 await asyncio.sleep(0.5)
         else:
-            # PAPER: maker-first model, degrade to taker if price runs away.
-            maker_fill = False
-            simulated_mid_move = 0.25 * spr
-            exec_price = (mid - 0.1 * spr - simulated_mid_move) if side == "buy" else (mid + 0.1 * spr + simulated_mid_move)
-            if (side == "buy" and exec_price <= limit_px) or (side == "sell" and exec_price >= limit_px):
-                maker_fill = True
-                px = limit_px
-                fees = 0.0
-            else:
-                # taker penalty: 1/2 spread + fee bps
-                penalty = 0.5 * spr
-                px = (exec_price + penalty) if side == "buy" else (exec_price - penalty)
-                notional = abs(px * qty)
-                fees = (TAKER_FEE_BPS_SIM / 1e4) * notional
-
+            # PAPER simulation
+            maker_fill = True
+            px = limit_px
+            notional = abs(px * qty)
+            fees = 0.0
             return {"filled": qty, "avg_px": float(px), "fees": float(fees), "maker": maker_fill}
 
     async def run(self):
@@ -124,8 +109,8 @@ class ExecutionAgent(BaseAgent):
         long_only = bool(settings.LONG_ONLY)
         order_size = float(settings.ORDER_SIZE)
 
-        # naive per-symbol position book (PnL engine elsewhere)
-        positions: dict[str, float] = {s: 0.0 for s in self.symbols}
+        # local guard only; the real PnL/positions are tracked in Portfolio
+        local_pos: dict[str, float] = {s: 0.0 for s in self.symbols}
 
         while self._running.is_set():
             sig: Signal = await self._sub.get()  # type: ignore[assignment]
@@ -135,14 +120,11 @@ class ExecutionAgent(BaseAgent):
             side = sig.side.lower()
             qty = float(sig.qty or order_size)
 
-            # long-only guard
-            if long_only and side == "sell" and positions[sig.symbol] <= 0:
-                log.debug("[exec] LONG_ONLY: ignore sell while flat")
+            if long_only and side == "sell" and local_pos[sig.symbol] <= 0:
                 continue
 
-            # position cap
-            if side == "buy" and positions[sig.symbol] + qty > max_pos:
-                qty = max(0.0, max_pos - positions[sig.symbol])
+            if side == "buy" and local_pos[sig.symbol] + qty > max_pos:
+                qty = max(0.0, max_pos - local_pos[sig.symbol])
                 if qty <= 0:
                     log.info(f"[exec] skip buy {sig.symbol}: position cap reached")
                     continue
@@ -151,10 +133,20 @@ class ExecutionAgent(BaseAgent):
             if fill["filled"] <= 0:
                 continue
 
+            # Update local positions
             delta = qty if side == "buy" else -qty
-            positions[sig.symbol] += delta
+            local_pos[sig.symbol] += delta
+
+            # Record trade in portfolio (drives UI)
+            try:
+                await self.portfolio.record_trade(
+                    symbol=sig.symbol, side=side, qty=float(fill["filled"]), price=float(fill["avg_px"]),
+                    fees=float(fill["fees"]), maker=bool(fill.get("maker", True)), reason=sig.reason or ""
+                )
+            except Exception:
+                log.exception("portfolio record_trade failed for %s", sig.symbol)
 
             log.info(
                 f"[exec] {side} {sig.symbol} filled={fill['filled']} avg_px={fill['avg_px']} "
-                f"maker={fill['maker']} fees={fill['fees']:.2f} | reason={sig.reason}"
+                f"maker={fill.get('maker', True)} fees={fill['fees']:.2f} | reason={sig.reason}"
             )

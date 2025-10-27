@@ -12,6 +12,8 @@ from ..core.logging import setup_logging
 from ..core.config import settings
 from ..core.metrics import kill_switch
 from ..agents.manager import AgentManager
+from ..core.state import Portfolio   # new import (manager already has one)
+from datetime import datetime, timezone
 
 log = logging.getLogger("api")
 
@@ -92,15 +94,71 @@ async def api_status():
 
 @app.get("/api/pnl")
 async def api_pnl():
-    return {"total": 0.0, "realized": 0.0, "unrealized": 0.0, "bySymbol": []}
+    snap = await manager.portfolio.snapshot()
+    unreal = await manager.portfolio.compute_unrealized()
+    total = float(snap["realized"]) + float(unreal["unrealized"])
+
+    # wrap and add timestamp; keep old keys too
+    return {
+        "ok": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total": total,
+        "realized": float(snap["realized"]),
+        "unrealized": float(unreal["unrealized"]),
+        "bySymbol": unreal["bySymbol"],        # [{symbol, unrealized}]
+        # optional for some UIs
+        "summary": {
+            "total": total,
+            "realized": float(snap["realized"]),
+            "unrealized": float(unreal["unrealized"]),
+            "symbols": [x["symbol"] for x in unreal["bySymbol"]],
+        },
+    }
 
 @app.get("/api/positions")
 async def api_positions():
-    return []
+    snap = await manager.portfolio.snapshot()
+    items = []
+    for p in snap["positions"]:
+        # normalize field names commonly used by dashboards
+        items.append({
+            "symbol": p["symbol"],
+            "qty": float(p.get("qty", 0.0)),
+            "avg_entry": float(p.get("avg_entry", 0.0)),
+        })
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,     # <--- UI-friendly wrapper
+    }
 
 @app.get("/api/trades")
 async def api_trades(limit: int = 100):
-    return []
+    snap = await manager.portfolio.snapshot()
+    trades = list(reversed(snap["trades"][-limit:]))
+
+    # normalize field names and add an id the UI can key by
+    items = []
+    for i, t in enumerate(trades, 1):
+        items.append({
+            "id": i,
+            "ts": t["ts"],
+            "symbol": t["symbol"],
+            "side": t["side"],
+            "qty": float(t["qty"]),
+            "price": float(t["price"]),
+            "fees": float(t.get("fees", 0.0)),
+            "maker": bool(t.get("maker", True)),
+            "reason": t.get("reason") or "",
+            # extra convenience fields many UIs expect:
+            "notional": float(t["qty"]) * float(t["price"]),
+        })
+
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,    # <--- UI-friendly wrapper
+    }
 
 # ---- Diagnostics (new) ----
 @app.get("/api/diag")
@@ -111,3 +169,27 @@ async def api_diag():
         "allowed_symbols": settings.ALLOWED_SYMBOLS,
         "agents": manager.list()
     }
+
+# --- quick market-data health check ---
+from fastapi import Query
+from ..services.pricefeed import PriceFeed
+from ..agents.manager import AgentManager  # already imported, reuse manager.pricefeed
+
+@app.get("/api/diag/pricefeed")
+async def api_diag_pricefeed(symbols: str = Query(None, description="CSV of symbols, defaults to ALLOWED_SYMBOLS")):
+    syms = [s.strip() for s in (symbols.split(",") if symbols else manager.list()[0]["symbols"]) if s.strip()] if manager.list() else []
+    pf = manager.pricefeed
+    out = {}
+    for s in syms:
+        ob = await pf.get_orderbook(s)
+        bids = ob.get("bids", [])
+        asks = ob.get("asks", [])
+        bb = bids[0][0] if bids else None
+        ba = asks[0][0] if asks else None
+        kl = await pf.get_recent_klines(s, limit=300)
+        out[s] = {
+            "best_bid": bb, "best_ask": ba,
+            "bids": len(bids), "asks": len(asks),
+            "candles": len(kl)
+        }
+    return out

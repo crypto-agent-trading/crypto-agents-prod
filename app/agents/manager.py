@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio, json, logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from .market_scanner import MarketScannerAgent
 from .depth import DepthL1L3Agent
@@ -15,25 +15,21 @@ from ..exchanges.paper import PaperExchange
 from ..exchanges.kraken import KrakenExchange
 from ..core.config import settings, is_live
 from ..core.signals import SignalBus
+from ..core.state import Portfolio
 
 log = logging.getLogger("agents.manager")
 
 class AgentManager:
-    """
-    Builds and runs all agents, wiring them through a shared SignalBus.
-    """
-
     def __init__(self, config_path: Path | None = None):
         self._cfg_path = config_path or Path("agents.json")
         self._agents: Dict[str, Any] = {}
         self._agent_cfgs: Dict[str, Dict[str, Any]] = {}
 
-        # Exchange + feeds
         self.bus = SignalBus()
         self.exchange = KrakenExchange() if is_live() else PaperExchange()
         self.pricefeed = PriceFeed(self.exchange)
+        self.portfolio = Portfolio(self.pricefeed)
 
-        # Load or create default config
         if not self._cfg_path.exists():
             default = {
                 "market_scanner": {"enabled": False, "interval_sec": 2, "mom_thresh": 0.25},
@@ -47,10 +43,7 @@ class AgentManager:
         self.build_all()
 
     def build_all(self):
-        syms = list(settings.ALLOWED_SYMBOLS or [])
-        if not syms:
-            # fall back to sane defaults so nothing is "silent"
-            syms = ["BTC/CAD", "ETH/CAD"]
+        syms = list(settings.ALLOWED_SYMBOLS or []) or ["BTC/CAD", "ETH/CAD"]
         mode = settings.MODE
 
         cfg = self._agent_cfgs
@@ -74,7 +67,8 @@ class AgentManager:
         if cfg.get("execution", {}).get("enabled", True):
             self._agents["execution"] = ExecutionAgent(
                 name="execution", symbols=syms, mode=mode, config=cfg["execution"],
-                exchange=self.exchange, pricefeed=self.pricefeed, bus=self.bus
+                exchange=self.exchange, pricefeed=self.pricefeed, bus=self.bus,
+                portfolio=self.portfolio
             )
 
         log.info("Built agents: %s", ",".join(self._agents.keys()) or "<none>")
@@ -97,11 +91,11 @@ class AgentManager:
             await ag.stop()
 
     async def start_all(self):
-        for n, ag in self._agents.items():
+        for _, ag in self._agents.items():
             await ag.start()
         log.info("All agents started: %s", ",".join(self._agents.keys()))
 
     async def stop_all(self):
-        for n, ag in self._agents.items():
+        for _, ag in self._agents.items():
             await ag.stop()
         log.info("All agents stopped")

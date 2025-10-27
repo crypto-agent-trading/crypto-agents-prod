@@ -1,0 +1,6 @@
+{"level": "INFO", "name": "agents.manager", "msg": "Built agents: indicator,execution"}
+{"level": "INFO", "name": "agents.manager", "msg": "Symbols: BTC/CAD,ETH/CAD | mode=paper | live=False"}
+{"level": "INFO", "name": "api", "msg": "API boot: mode=paper live=False symbols=['BTC/CAD', 'ETH/CAD']"}
+{"level": "INFO", "name": "agent.base", "msg": "[indicator] started (symbols=BTC/CAD,ETH/CAD)"}
+{"level": "INFO", "name": "agent.base", "msg": "[execution] started (symbols=BTC/CAD,ETH/CAD)"}
+{"level": "INFO", "name": "agents.manager", "msg": "All agents started: indicator,execution"}
